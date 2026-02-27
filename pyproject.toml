@@ -29,6 +29,8 @@ gpu = [
     "torchaudio>=2.1",
     "ultralytics>=8.0",
     "chatterbox-tts>=0.1",
+    "transformers>=4.36",
+    "accelerate>=0.25",
 ]
 dev = [
     "pytest>=7.4",

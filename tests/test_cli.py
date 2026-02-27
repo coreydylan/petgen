@@ -6,15 +6,14 @@ from unittest.mock import MagicMock, patch
 
 from click.testing import CliRunner
 
+import pytest
+
 from petgen.cli import main
 
 
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
-
-
-import pytest
 
 
 class TestCLI:
@@ -80,12 +79,15 @@ class TestCLI:
 
     def test_generate_missing_character(self) -> None:
         runner = CliRunner()
-        with patch("petgen.cli.get_config") as mock_config:
+        with patch("petgen.cli.get_config") as mock_config, \
+             patch("petgen.pipeline.PetGenPipeline") as mock_pipeline_cls:
             cfg = MagicMock()
-            cfg.characters_dir = MagicMock()
-            cfg.characters_dir.glob.return_value = []
             cfg.ensure_dirs.return_value = None
             mock_config.return_value = cfg
+
+            mock_pipeline = MagicMock()
+            mock_pipeline.character_creator.get_character.return_value = None
+            mock_pipeline_cls.return_value = mock_pipeline
 
             result = runner.invoke(main, [
                 "generate",

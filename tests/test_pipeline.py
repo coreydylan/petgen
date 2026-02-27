@@ -72,7 +72,6 @@ class TestPetGenPipeline:
             reference_images=photos, name="Rex", breed="Poodle"
         )
 
-    @patch("petgen.pipeline.PetGenPipeline.compositor", new_callable=lambda: property(lambda self: MagicMock()))
     def test_generate_uses_canonical_pose_when_no_scene_prompt(
         self, pipeline: PetGenPipeline, character_with_files: CharacterProfile
     ) -> None:
@@ -110,8 +109,6 @@ class TestPetGenPipeline:
 
         assert isinstance(result, PipelineResult)
         assert result.video_path == Path("/tmp/output.mp4")
-        # Should NOT have called generate_scene since no scene_prompt
-        assert not hasattr(pipeline, "_character_creator") or True
 
     def test_extract_audio_features_fallback(self, pipeline: PetGenPipeline) -> None:
         """Audio feature extraction should return defaults for missing audio."""
