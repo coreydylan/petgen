@@ -168,28 +168,37 @@ class LipSyncAnimator:
             MotionSequence with keypoints (T, N, 2) and expressions (T, D).
         """
         import torch
-        import torchaudio
+        from scipy.io import wavfile as scipy_wav
+        from scipy.signal import resample_poly
 
         joyvasa = self._load_joyvasa()
         device = joyvasa["device"]
         dtype = joyvasa["dtype"]
 
-        # Load and resample audio to 16 kHz (wav2vec2 requirement)
-        waveform, sr = torchaudio.load(str(audio_path))
-        if sr != 16000:
-            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
-            waveform = resampler(waveform)
-            sr = 16000
+        # Load audio using scipy (avoids torchaudio dependency)
+        sr, audio_data = scipy_wav.read(str(audio_path))
+        # Normalize to float32 [-1, 1]
+        if audio_data.dtype == np.int16:
+            audio_data = audio_data.astype(np.float32) / 32768.0
+        elif audio_data.dtype == np.int32:
+            audio_data = audio_data.astype(np.float32) / 2147483648.0
+        elif audio_data.dtype != np.float32:
+            audio_data = audio_data.astype(np.float32)
 
         # Mono
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
+        if audio_data.ndim > 1:
+            audio_data = audio_data.mean(axis=1)
+
+        # Resample to 16 kHz (wav2vec2 requirement)
+        if sr != 16000:
+            audio_data = resample_poly(audio_data, 16000, sr).astype(np.float32)
+            sr = 16000
 
         # Extract wav2vec2 features
         processor = joyvasa["processor"]
         wav2vec = joyvasa["wav2vec"]
         inputs = processor(
-            waveform.squeeze(0).numpy(),
+            audio_data,
             sampling_rate=sr,
             return_tensors="pt",
         )
