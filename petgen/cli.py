@@ -361,6 +361,18 @@ def list_presets(ctx: click.Context) -> None:
 
 
 @main.command()
+@click.option("--port", default=7860, type=int, help="Port for Gradio UI")
+@click.option("--share", is_flag=True, help="Create public Gradio link")
+@click.option("--server-name", default="0.0.0.0", help="Server host")
+def ui(port: int, share: bool, server_name: str) -> None:
+    """Launch the PetGen web interface."""
+    from petgen.ui.app import create_ui
+
+    app = create_ui()
+    app.launch(server_name=server_name, server_port=port, share=share)
+
+
+@main.command()
 @click.option("--host", default="0.0.0.0", help="Bind address")
 @click.option("--port", default=8000, type=int, help="Port number")
 @click.option("--reload", is_flag=True, help="Enable auto-reload for development")
