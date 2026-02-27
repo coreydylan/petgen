@@ -205,6 +205,113 @@ def scene(ctx: click.Context, character: str, prompt: str, style: str, output: s
         click.echo(f"Scene saved: {scene_path}")
 
 
+@main.command(name="multi-scene")
+@click.option("--characters", required=True, help="Comma-separated character names or IDs")
+@click.option("--prompt", required=True, help="Scene description")
+@click.option("--style", default="photorealistic", help="Image style")
+@click.option("--output", default=None, type=click.Path(), help="Output image path")
+@click.pass_context
+def multi_scene(
+    ctx: click.Context,
+    characters: str,
+    prompt: str,
+    style: str,
+    output: str | None,
+) -> None:
+    """Generate a scene image with multiple characters."""
+    from petgen.pipeline import PetGenPipeline
+
+    config = ctx.obj["config"]
+    pipeline = PetGenPipeline(config)
+
+    char_names = [c.strip() for c in characters.split(",") if c.strip()]
+    if len(char_names) < 2:
+        click.echo("Error: At least 2 characters required (comma-separated).", err=True)
+        sys.exit(1)
+
+    profiles = []
+    for name in char_names:
+        profile = pipeline.character_creator.get_character(name)
+        if profile is None:
+            click.echo(f"Error: Character '{name}' not found.", err=True)
+            sys.exit(1)
+        profiles.append(profile)
+
+    click.echo(f"Generating multi-character scene with {len(profiles)} characters...")
+    scene_path = pipeline.character_creator.generate_multi_character_scene(
+        characters=profiles, prompt=prompt, style=style,
+    )
+
+    if output:
+        import shutil
+        shutil.copy2(str(scene_path), output)
+        click.echo(f"Scene saved: {output}")
+    else:
+        click.echo(f"Scene saved: {scene_path}")
+
+
+@main.command(name="export-character")
+@click.option("--character", required=True, help="Character name or ID")
+@click.option("--output", required=True, type=click.Path(), help="Output .zip path")
+@click.pass_context
+def export_character(ctx: click.Context, character: str, output: str) -> None:
+    """Export a character to a portable .zip bundle."""
+    from petgen.modules.character import CharacterCreator
+
+    config = ctx.obj["config"]
+    creator = CharacterCreator(config)
+
+    profile = creator.get_character(character)
+    if profile is None:
+        click.echo(f"Error: Character '{character}' not found.", err=True)
+        sys.exit(1)
+
+    zip_path = creator.export_character(profile, Path(output))
+    click.echo(f"Exported '{profile.name}' to {zip_path}")
+
+
+@main.command(name="import-character")
+@click.option("--zip", "zip_path", required=True, type=click.Path(exists=True), help="Path to character .zip")
+@click.pass_context
+def import_character(ctx: click.Context, zip_path: str) -> None:
+    """Import a character from a .zip bundle."""
+    from petgen.modules.character import CharacterCreator
+
+    config = ctx.obj["config"]
+    creator = CharacterCreator(config)
+
+    profile = creator.import_character(Path(zip_path))
+    click.echo(f"Imported character:")
+    click.echo(f"  ID:    {profile.id}")
+    click.echo(f"  Name:  {profile.name}")
+    click.echo(f"  Breed: {profile.breed} ({profile.breed_group.value})")
+
+
+@main.command(name="clone-voice")
+@click.option("--character", required=True, help="Character name or ID")
+@click.option("--audio", required=True, type=click.Path(exists=True), help="Path to voice reference .wav clip")
+@click.option("--name", default=None, help="Optional preset name")
+@click.pass_context
+def clone_voice(ctx: click.Context, character: str, audio: str, name: str | None) -> None:
+    """Clone a voice from an audio clip and attach it to a character."""
+    from petgen.modules.character import CharacterCreator
+    from petgen.modules.voice import VoiceGenerator
+
+    config = ctx.obj["config"]
+    creator = CharacterCreator(config)
+
+    profile = creator.get_character(character)
+    if profile is None:
+        click.echo(f"Error: Character '{character}' not found.", err=True)
+        sys.exit(1)
+
+    voice_gen = VoiceGenerator(config)
+    settings = voice_gen.clone_voice(profile, Path(audio), name=name)
+    click.echo(f"Voice cloned for '{profile.name}':")
+    click.echo(f"  Preset: {settings.preset_name}")
+    click.echo(f"  Clip:   {settings.reference_clip}")
+
+
 @main.command(name="list-characters")
 @click.pass_context
 def list_characters(ctx: click.Context) -> None:
@@ -251,6 +358,23 @@ def list_presets(ctx: click.Context) -> None:
             click.echo(f"  {p.name:16s}  breed={p.breed_group.value}  clip={p.reference_clip.name}")
     else:
         click.echo("No custom presets. Create one with a voice reference clip.")
+
+
+@main.command()
+@click.option("--host", default="0.0.0.0", help="Bind address")
+@click.option("--port", default=8000, type=int, help="Port number")
+@click.option("--reload", is_flag=True, help="Enable auto-reload for development")
+def serve(host: str, port: int, reload: bool) -> None:
+    """Start the PetGen API server."""
+    import uvicorn
+
+    uvicorn.run(
+        "petgen.server.app:create_app",
+        host=host,
+        port=port,
+        reload=reload,
+        factory=True,
+    )
 
 
 if __name__ == "__main__":

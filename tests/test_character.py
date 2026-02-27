@@ -14,6 +14,7 @@ from PIL import Image
 
 from petgen.config import PetGenConfig
 from petgen.models import BreedGroup, CharacterProfile, VoiceSettings
+from petgen.models import MultiCharacterScene
 from petgen.modules.character import (
     CharacterCreator,
     _is_likely_dark_fur,
@@ -651,3 +652,280 @@ class TestListAndGetCharacters:
 
     def test_get_nonexistent(self, creator: CharacterCreator):
         assert creator.get_character("no-such-id") is None
+
+
+# ---------------------------------------------------------------------------
+# Tests: CharacterCreator.generate_multi_character_scene
+# ---------------------------------------------------------------------------
+
+
+class TestMultiCharacterScene:
+    def test_generates_scene_with_two_characters(
+        self, creator: CharacterCreator, ref_image: Path
+    ):
+        creator._client.models.generate_content.return_value = _make_gemini_image_response()
+
+        char_ids = ["multi-a", "multi-b"]
+        profiles = []
+        for cid in char_ids:
+            (creator.config.characters_dir / cid / "images").mkdir(parents=True)
+            profiles.append(
+                CharacterProfile(
+                    id=cid,
+                    name=f"Pet_{cid}",
+                    breed="Corgi",
+                    breed_group=BreedGroup.SMALL_DOG,
+                    reference_images=[ref_image],
+                    canonical_poses={"front": ref_image},
+                )
+            )
+
+        scene_path = creator.generate_multi_character_scene(
+            characters=profiles, prompt="playing in a park"
+        )
+
+        assert scene_path.exists()
+        assert "multi_scene_" in scene_path.name
+        assert scene_path.suffix == ".png"
+        creator._client.models.generate_content.assert_called_once()
+
+    def test_prompt_contains_all_character_names(
+        self, creator: CharacterCreator, ref_image: Path
+    ):
+        creator._client.models.generate_content.return_value = _make_gemini_image_response()
+
+        profiles = []
+        for i, name in enumerate(["Luna", "Max", "Bella"]):
+            cid = f"name-{i}"
+            (creator.config.characters_dir / cid / "images").mkdir(parents=True)
+            profiles.append(
+                CharacterProfile(
+                    id=cid,
+                    name=name,
+                    breed="Poodle",
+                    breed_group=BreedGroup.MEDIUM_DOG,
+                    reference_images=[ref_image],
+                )
+            )
+
+        creator.generate_multi_character_scene(
+            characters=profiles, prompt="at the beach"
+        )
+
+        call_contents = creator._client.models.generate_content.call_args[1]["contents"]
+        prompt_text = call_contents[-1]
+        assert "Luna" in prompt_text
+        assert "Max" in prompt_text
+        assert "Bella" in prompt_text
+
+    def test_raises_on_more_than_five(self, creator: CharacterCreator, ref_image: Path):
+        profiles = [
+            CharacterProfile(
+                id=f"too-many-{i}",
+                name=f"Pet{i}",
+                breed="Mutt",
+                breed_group=BreedGroup.MEDIUM_DOG,
+                reference_images=[ref_image],
+            )
+            for i in range(6)
+        ]
+
+        with pytest.raises(ValueError, match="Maximum 5 characters"):
+            creator.generate_multi_character_scene(
+                characters=profiles, prompt="crowded park"
+            )
+
+    def test_raises_on_fewer_than_two(self, creator: CharacterCreator, ref_image: Path):
+        profile = CharacterProfile(
+            id="solo",
+            name="Lonely",
+            breed="Pug",
+            breed_group=BreedGroup.SMALL_DOG,
+            reference_images=[ref_image],
+        )
+
+        with pytest.raises(ValueError, match="at least 2 characters"):
+            creator.generate_multi_character_scene(
+                characters=[profile], prompt="alone"
+            )
+
+    def test_scene_saved_to_first_characters_dir(
+        self, creator: CharacterCreator, ref_image: Path
+    ):
+        creator._client.models.generate_content.return_value = _make_gemini_image_response()
+
+        first_id = "first-char"
+        second_id = "second-char"
+        for cid in [first_id, second_id]:
+            (creator.config.characters_dir / cid / "images").mkdir(parents=True)
+
+        profiles = [
+            CharacterProfile(
+                id=first_id, name="First", breed="Corgi",
+                breed_group=BreedGroup.SMALL_DOG,
+                reference_images=[ref_image],
+            ),
+            CharacterProfile(
+                id=second_id, name="Second", breed="Poodle",
+                breed_group=BreedGroup.MEDIUM_DOG,
+                reference_images=[ref_image],
+            ),
+        ]
+
+        scene_path = creator.generate_multi_character_scene(
+            characters=profiles, prompt="together"
+        )
+
+        expected_dir = creator.config.characters_dir / first_id / "images"
+        assert scene_path.parent == expected_dir
+
+    def test_style_in_prompt(self, creator: CharacterCreator, ref_image: Path):
+        creator._client.models.generate_content.return_value = _make_gemini_image_response()
+
+        profiles = []
+        for i in range(2):
+            cid = f"style-{i}"
+            (creator.config.characters_dir / cid / "images").mkdir(parents=True)
+            profiles.append(
+                CharacterProfile(
+                    id=cid, name=f"P{i}", breed="Corgi",
+                    breed_group=BreedGroup.SMALL_DOG,
+                    reference_images=[ref_image],
+                )
+            )
+
+        creator.generate_multi_character_scene(
+            characters=profiles, prompt="in space", style="watercolor"
+        )
+
+        call_contents = creator._client.models.generate_content.call_args[1]["contents"]
+        prompt_text = call_contents[-1]
+        assert "watercolor" in prompt_text
+
+
+# ---------------------------------------------------------------------------
+# Tests: CharacterCreator.export_character / import_character
+# ---------------------------------------------------------------------------
+
+
+class TestExportImport:
+    def test_export_creates_zip(self, creator: CharacterCreator, ref_image: Path, tmp_path: Path):
+        char_id = "export-test"
+        images_dir = creator.config.characters_dir / char_id / "images"
+        images_dir.mkdir(parents=True)
+
+        # Copy ref image into character dir to simulate a real character
+        dest_ref = images_dir / "ref_0.png"
+        import shutil
+        shutil.copy2(str(ref_image), str(dest_ref))
+
+        profile = CharacterProfile(
+            id=char_id,
+            name="Exporty",
+            breed="Corgi",
+            breed_group=BreedGroup.SMALL_DOG,
+            reference_images=[dest_ref],
+            canonical_poses={"front": dest_ref},
+            personality_tags=["brave"],
+        )
+
+        zip_path = creator.export_character(profile, tmp_path / "exporty.zip")
+
+        assert zip_path.exists()
+        assert zip_path.suffix == ".zip"
+
+        import zipfile
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            names = zf.namelist()
+            assert "profile.json" in names
+            assert any(n.startswith("images/") for n in names)
+
+    def test_import_creates_new_character(
+        self, creator: CharacterCreator, ref_image: Path, tmp_path: Path
+    ):
+        # First export a character
+        char_id = "roundtrip-export"
+        images_dir = creator.config.characters_dir / char_id / "images"
+        images_dir.mkdir(parents=True)
+
+        import shutil
+        dest_ref = images_dir / "ref_0.png"
+        shutil.copy2(str(ref_image), str(dest_ref))
+
+        original = CharacterProfile(
+            id=char_id,
+            name="Roundtrip",
+            breed="Beagle",
+            breed_group=BreedGroup.MEDIUM_DOG,
+            reference_images=[dest_ref],
+            canonical_poses={"front": dest_ref},
+            personality_tags=["curious"],
+            metadata={"origin": "test"},
+        )
+
+        zip_path = creator.export_character(original, tmp_path / "roundtrip.zip")
+
+        # Import the exported character
+        imported = creator.import_character(zip_path)
+
+        assert imported.id != original.id  # new UUID
+        assert imported.name == "Roundtrip"
+        assert imported.breed == "Beagle"
+        assert imported.breed_group == BreedGroup.MEDIUM_DOG
+        assert imported.personality_tags == ["curious"]
+        assert imported.metadata == {"origin": "test"}
+        assert len(imported.reference_images) == 1
+        assert imported.reference_images[0].exists()
+        assert "front" in imported.canonical_poses
+        assert imported.canonical_poses["front"].exists()
+
+        # Profile should be persisted
+        json_path = creator.config.characters_dir / f"{imported.id}.json"
+        assert json_path.exists()
+
+    def test_import_missing_zip_raises(self, creator: CharacterCreator, tmp_path: Path):
+        with pytest.raises(FileNotFoundError, match="Zip file not found"):
+            creator.import_character(tmp_path / "nonexistent.zip")
+
+    def test_import_invalid_zip_raises(self, creator: CharacterCreator, tmp_path: Path):
+        import zipfile
+
+        bad_zip = tmp_path / "bad.zip"
+        with zipfile.ZipFile(bad_zip, "w") as zf:
+            zf.writestr("readme.txt", "no profile here")
+
+        with pytest.raises(ValueError, match="missing profile.json"):
+            creator.import_character(bad_zip)
+
+    def test_export_import_preserves_voice_settings(
+        self, creator: CharacterCreator, ref_image: Path, tmp_path: Path
+    ):
+        char_id = "voice-export"
+        images_dir = creator.config.characters_dir / char_id / "images"
+        images_dir.mkdir(parents=True)
+
+        import shutil
+        dest_ref = images_dir / "ref_0.png"
+        shutil.copy2(str(ref_image), str(dest_ref))
+
+        original = CharacterProfile(
+            id=char_id,
+            name="Voicy",
+            breed="Husky",
+            breed_group=BreedGroup.LARGE_DOG,
+            reference_images=[dest_ref],
+            voice=VoiceSettings(
+                preset_name="deep",
+                exaggeration=0.3,
+                pitch_shift=-1.5,
+                speed=0.85,
+            ),
+        )
+
+        zip_path = creator.export_character(original, tmp_path / "voicy.zip")
+        imported = creator.import_character(zip_path)
+
+        assert imported.voice.preset_name == "deep"
+        assert imported.voice.exaggeration == 0.3
+        assert imported.voice.pitch_shift == -1.5
+        assert imported.voice.speed == 0.85

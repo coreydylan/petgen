@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from petgen.config import PetGenConfig
-from petgen.models import BreedGroup, VoiceSettings
+from petgen.models import BreedGroup, CharacterProfile, VoiceSettings
 from petgen.modules.voice import DEFAULT_PRESETS, VoiceGenerator, VoicePreset
 
 
@@ -438,3 +438,95 @@ class TestModelLoading:
 
         assert gen._use_fallback is True
         assert gen._model is None
+
+
+# ---------------------------------------------------------------------------
+# clone_voice()
+# ---------------------------------------------------------------------------
+
+
+class TestCloneVoice:
+    """Test voice cloning from audio clips."""
+
+    def test_clone_copies_clip_and_updates_settings(self, tmp_config: PetGenConfig):
+        """Cloning copies audio clip to character dir and updates VoiceSettings."""
+        gen = VoiceGenerator(tmp_config)
+        source = _make_wav(tmp_config.temp_dir / "clone_src.wav")
+
+        char_id = "clone-test"
+        (tmp_config.characters_dir / char_id).mkdir(parents=True)
+
+        profile = CharacterProfile(
+            id=char_id,
+            name="Cloney",
+            breed="Poodle",
+            breed_group=BreedGroup.MEDIUM_DOG,
+            reference_images=[],
+        )
+
+        settings = gen.clone_voice(profile, source)
+
+        assert settings.reference_clip is not None
+        assert settings.reference_clip.exists()
+        assert settings.reference_clip.parent == tmp_config.characters_dir / char_id
+        assert settings.preset_name == "cloney"
+
+    def test_clone_with_custom_name(self, tmp_config: PetGenConfig):
+        """Custom preset name overrides default."""
+        gen = VoiceGenerator(tmp_config)
+        source = _make_wav(tmp_config.temp_dir / "named_src.wav")
+
+        char_id = "named-clone"
+        (tmp_config.characters_dir / char_id).mkdir(parents=True)
+
+        profile = CharacterProfile(
+            id=char_id,
+            name="Named",
+            breed="Corgi",
+            breed_group=BreedGroup.SMALL_DOG,
+            reference_images=[],
+        )
+
+        settings = gen.clone_voice(profile, source, name="sassy_voice")
+
+        assert settings.preset_name == "sassy_voice"
+        assert "sassy_voice" in settings.reference_clip.name
+
+    def test_clone_persists_profile(self, tmp_config: PetGenConfig):
+        """Cloning saves the updated profile to disk."""
+        gen = VoiceGenerator(tmp_config)
+        source = _make_wav(tmp_config.temp_dir / "persist_src.wav")
+
+        char_id = "persist-clone"
+        (tmp_config.characters_dir / char_id).mkdir(parents=True)
+
+        profile = CharacterProfile(
+            id=char_id,
+            name="Persist",
+            breed="Bulldog",
+            breed_group=BreedGroup.MEDIUM_DOG,
+            reference_images=[],
+        )
+
+        gen.clone_voice(profile, source)
+
+        # Reload from disk
+        json_path = tmp_config.characters_dir / f"{char_id}.json"
+        assert json_path.exists()
+        loaded = CharacterProfile.load(json_path)
+        assert loaded.voice.reference_clip is not None
+
+    def test_clone_missing_clip_raises(self, tmp_config: PetGenConfig):
+        """Raises FileNotFoundError when audio clip doesn't exist."""
+        gen = VoiceGenerator(tmp_config)
+
+        profile = CharacterProfile(
+            id="missing-clip",
+            name="Missing",
+            breed="Pug",
+            breed_group=BreedGroup.SMALL_DOG,
+            reference_images=[],
+        )
+
+        with pytest.raises(FileNotFoundError, match="Audio clip not found"):
+            gen.clone_voice(profile, tmp_config.temp_dir / "nonexistent.wav")

@@ -110,6 +110,16 @@ class CharacterProfile:
 
 
 @dataclass
+class MultiCharacterScene:
+    """A scene containing multiple pet characters."""
+
+    characters: list[CharacterProfile]
+    scene_image: Path
+    prompt: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class BoundingBox:
     """Face bounding box."""
 

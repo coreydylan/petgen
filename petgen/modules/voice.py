@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from petgen.config import PetGenConfig
-from petgen.models import BreedGroup, VoiceSettings
+from petgen.models import BreedGroup, CharacterProfile, VoiceSettings
 
 logger = logging.getLogger(__name__)
 
@@ -263,6 +263,52 @@ class VoiceGenerator:
                 if bg.value == candidate:
                     return bg
         return BreedGroup.MEDIUM_DOG  # safe default
+
+    def clone_voice(
+        self,
+        character: CharacterProfile,
+        audio_clip: Path,
+        name: str | None = None,
+    ) -> VoiceSettings:
+        """Save a voice reference clip to a character's voice settings.
+
+        Copies the audio clip into the character's directory and updates
+        the character's VoiceSettings with the reference_clip path.
+
+        Args:
+            character: The character to attach the voice to.
+            audio_clip: Path to an audio clip (.wav) for voice cloning.
+            name: Optional preset name. Defaults to the character's name.
+
+        Returns:
+            Updated VoiceSettings for the character.
+
+        Raises:
+            FileNotFoundError: If audio_clip does not exist.
+        """
+        if not audio_clip.exists():
+            raise FileNotFoundError(f"Audio clip not found: {audio_clip}")
+
+        char_dir = self.config.characters_dir / character.id
+        char_dir.mkdir(parents=True, exist_ok=True)
+
+        preset_name = name or character.name.lower().replace(" ", "_")
+        dest = char_dir / f"voice_{preset_name}{audio_clip.suffix}"
+        shutil.copy2(str(audio_clip), str(dest))
+
+        character.voice.reference_clip = dest
+        character.voice.preset_name = preset_name
+
+        # Persist the updated profile
+        character.save(self.config.characters_dir)
+
+        logger.info(
+            "Cloned voice for '%s' from %s -> %s",
+            character.name,
+            audio_clip.name,
+            dest,
+        )
+        return character.voice
 
     def create_preset(
         self,

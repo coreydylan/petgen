@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import uuid
+import zipfile
 from pathlib import Path
 
 from PIL import Image
 
 from petgen.config import PetGenConfig
-from petgen.models import BreedGroup, CharacterProfile, GeminiModel
+from petgen.models import BreedGroup, CharacterProfile, GeminiModel, MultiCharacterScene
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +228,57 @@ class CharacterCreator:
         logger.info("Generated scene for %s: %s", profile.id, out_path.name)
         return out_path
 
+    def generate_mouth_open_ref(
+        self,
+        profile: CharacterProfile,
+        model: GeminiModel = GeminiModel.NANO_BANANA_2,
+    ) -> Path:
+        """Generate a reference image of the character with mouth open showing teeth/tongue.
+
+        Uses front-facing canonical pose + refs as identity anchors.
+
+        Args:
+            profile: The character whose mouth-open variant to generate.
+            model: Gemini model to use for generation.
+
+        Returns:
+            Path to the saved mouth-open reference image.
+        """
+        images_dir = self.config.characters_dir / profile.id / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build reference parts for identity anchoring
+        ref_parts = []
+        if "front" in profile.canonical_poses:
+            ref_parts.append(Image.open(profile.canonical_poses["front"]))
+        for ref_path in profile.reference_images[:2]:
+            ref_parts.append(Image.open(ref_path))
+
+        is_dark = _is_likely_dark_fur(profile.breed)
+        prompt = (
+            f"Generate this exact {profile.breed} with mouth wide open, "
+            f"showing teeth and tongue, front-facing, photorealistic, "
+            f"studio lighting, white background, high detail."
+        )
+        if is_dark:
+            prompt += f" {_DARK_FUR_ADVISORY}"
+
+        contents = [*ref_parts, prompt]
+        response = self.client.models.generate_content(
+            model=model.value,
+            contents=contents,
+        )
+
+        out_path = images_dir / "mouth_open.png"
+        _save_image_from_response(response, out_path)
+
+        # Store path in canonical poses
+        profile.canonical_poses["mouth_open"] = out_path
+        profile.save(self.config.characters_dir)
+
+        logger.info("Generated mouth-open ref for %s: %s", profile.id, out_path)
+        return out_path
+
     def detect_breed(self, image_path: Path) -> tuple[str, BreedGroup]:
         """Auto-detect breed and breed group from a pet photo.
 
@@ -271,6 +324,215 @@ class CharacterCreator:
             if profile.name.lower() == character_id.lower():
                 return profile
         return None
+
+    def generate_multi_character_scene(
+        self,
+        characters: list[CharacterProfile],
+        prompt: str,
+        style: str = "photorealistic",
+        model: GeminiModel = GeminiModel.NANO_BANANA_2,
+    ) -> Path:
+        """Generate a scene image featuring multiple characters together.
+
+        Args:
+            characters: 2-5 CharacterProfile objects to include in the scene.
+            prompt: Scene description.
+            style: Visual style for the generation.
+            model: Gemini model to use.
+
+        Returns:
+            Path to the saved scene image.
+
+        Raises:
+            ValueError: If fewer than 2 or more than 5 characters are provided.
+        """
+        if len(characters) > 5:
+            raise ValueError(f"Maximum 5 characters per scene, got {len(characters)}.")
+        if len(characters) < 2:
+            raise ValueError("Multi-character scene requires at least 2 characters.")
+
+        # Save to first character's image directory
+        images_dir = self.config.characters_dir / characters[0].id / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+
+        # Collect reference images — prefer front pose for each character
+        ref_parts = []
+        for char in characters:
+            if "front" in char.canonical_poses:
+                ref_parts.append(Image.open(char.canonical_poses["front"]))
+            elif char.reference_images:
+                ref_parts.append(Image.open(char.reference_images[0]))
+
+        # Build character description string
+        char_descriptions = " and ".join(
+            f"{c.name} the {c.breed}" for c in characters
+        )
+
+        full_prompt = (
+            f"Generate a scene with {char_descriptions} {prompt}, {style}"
+        )
+
+        contents = [*ref_parts, full_prompt]
+        response = self.client.models.generate_content(
+            model=model.value,
+            contents=contents,
+        )
+
+        scene_id = uuid.uuid4().hex[:8]
+        out_path = images_dir / f"multi_scene_{scene_id}.png"
+        _save_image_from_response(response, out_path)
+        logger.info(
+            "Generated multi-character scene with %d characters: %s",
+            len(characters),
+            out_path.name,
+        )
+        return out_path
+
+    def export_character(self, profile: CharacterProfile, output_path: Path) -> Path:
+        """Bundle a character into a .zip file with JSON profile and all images.
+
+        Args:
+            profile: The character to export.
+            output_path: Destination path for the .zip file.
+
+        Returns:
+            Path to the created zip file.
+        """
+        output_path = output_path.with_suffix(".zip")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Write profile JSON
+            profile_data = {
+                "id": profile.id,
+                "name": profile.name,
+                "breed": profile.breed,
+                "breed_group": profile.breed_group.value,
+                "reference_images": [p.name for p in profile.reference_images],
+                "canonical_poses": {k: v.name for k, v in profile.canonical_poses.items()},
+                "voice": {
+                    "preset_name": profile.voice.preset_name,
+                    "reference_clip": (
+                        profile.voice.reference_clip.name
+                        if profile.voice.reference_clip
+                        else None
+                    ),
+                    "exaggeration": profile.voice.exaggeration,
+                    "pitch_shift": profile.voice.pitch_shift,
+                    "speed": profile.voice.speed,
+                },
+                "personality_tags": profile.personality_tags,
+                "metadata": profile.metadata,
+            }
+            zf.writestr("profile.json", json.dumps(profile_data, indent=2))
+
+            # Bundle all images, deduplicating by archive name
+            written: set[str] = set()
+
+            for img_path in profile.reference_images:
+                arc_name = f"images/{img_path.name}"
+                if img_path.exists() and arc_name not in written:
+                    zf.write(img_path, arc_name)
+                    written.add(arc_name)
+
+            for pose_name, pose_path in profile.canonical_poses.items():
+                arc_name = f"images/{pose_path.name}"
+                if pose_path.exists() and arc_name not in written:
+                    zf.write(pose_path, arc_name)
+                    written.add(arc_name)
+
+            # Bundle voice reference clip if present
+            if profile.voice.reference_clip and profile.voice.reference_clip.exists():
+                arc_name = f"images/{profile.voice.reference_clip.name}"
+                if arc_name not in written:
+                    zf.write(profile.voice.reference_clip, arc_name)
+                    written.add(arc_name)
+
+        logger.info("Exported character '%s' to %s", profile.name, output_path)
+        return output_path
+
+    def import_character(self, zip_path: Path) -> CharacterProfile:
+        """Import a character from a .zip bundle.
+
+        Unpacks the zip into a new character directory with a fresh UUID,
+        then returns the loaded CharacterProfile.
+
+        Args:
+            zip_path: Path to the .zip file to import.
+
+        Returns:
+            The imported CharacterProfile.
+
+        Raises:
+            FileNotFoundError: If zip_path does not exist.
+            ValueError: If the zip is missing the required profile.json.
+        """
+        if not zip_path.exists():
+            raise FileNotFoundError(f"Zip file not found: {zip_path}")
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            names = zf.namelist()
+            if "profile.json" not in names:
+                raise ValueError("Invalid character zip: missing profile.json")
+
+            profile_data = json.loads(zf.read("profile.json"))
+
+        # Generate a new UUID for the imported character
+        new_id = str(uuid.uuid4())
+        char_dir = self.config.characters_dir / new_id
+        images_dir = char_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+
+        # Extract images
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            for name in zf.namelist():
+                if name.startswith("images/") and not name.endswith("/"):
+                    filename = Path(name).name
+                    dest = images_dir / filename
+                    dest.write_bytes(zf.read(name))
+
+        # Rebuild paths relative to new character directory
+        ref_images = [
+            images_dir / fname
+            for fname in profile_data.get("reference_images", [])
+            if (images_dir / fname).exists()
+        ]
+
+        canonical_poses = {
+            k: images_dir / fname
+            for k, fname in profile_data.get("canonical_poses", {}).items()
+            if (images_dir / fname).exists()
+        }
+
+        voice_data = profile_data.get("voice", {})
+        ref_clip_name = voice_data.get("reference_clip")
+        ref_clip = None
+        if ref_clip_name and (images_dir / ref_clip_name).exists():
+            ref_clip = images_dir / ref_clip_name
+
+        from petgen.models import VoiceSettings
+
+        profile = CharacterProfile(
+            id=new_id,
+            name=profile_data["name"],
+            breed=profile_data["breed"],
+            breed_group=BreedGroup(profile_data["breed_group"]),
+            reference_images=ref_images,
+            canonical_poses=canonical_poses,
+            voice=VoiceSettings(
+                preset_name=voice_data.get("preset_name"),
+                reference_clip=ref_clip,
+                exaggeration=voice_data.get("exaggeration", 0.7),
+                pitch_shift=voice_data.get("pitch_shift", 0.0),
+                speed=voice_data.get("speed", 1.0),
+            ),
+            personality_tags=profile_data.get("personality_tags", []),
+            metadata=profile_data.get("metadata", {}),
+        )
+
+        profile.save(self.config.characters_dir)
+        logger.info("Imported character '%s' as %s", profile.name, new_id)
+        return profile
 
 
 # ---------------------------------------------------------------------------
