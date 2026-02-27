@@ -59,10 +59,17 @@ class TestBreathing:
         for orig, out in zip(uniform_frames, result):
             np.testing.assert_array_equal(orig[:split_y], out[:split_y])
 
-    def test_lower_region_changes_over_time(self, motion: SecondaryMotion, uniform_frames: list):
+    def test_lower_region_changes_over_time(self, motion: SecondaryMotion):
         """The lower region should vary across frames due to the sine wave."""
-        result = motion.apply_breathing(uniform_frames, bpm=15.0, amplitude=0.03, fps=25.0)
-        h = uniform_frames[0].shape[0]
+        # Use a gradient frame so warping produces visible pixel changes
+        gradient_frames = []
+        for _ in range(50):
+            frame = np.zeros((256, 256, 3), dtype=np.uint8)
+            for row in range(256):
+                frame[row, :, :] = row  # vertical gradient
+            gradient_frames.append(frame)
+        result = motion.apply_breathing(gradient_frames, bpm=15.0, amplitude=0.03, fps=25.0)
+        h = gradient_frames[0].shape[0]
         split_y = int(h * 0.4)
         # Collect the mean of lower region across frames — should not all be identical
         means = [r[split_y:].mean() for r in result]
@@ -89,13 +96,18 @@ class TestEarTwitches:
         assert len(result) == len(sample_frames)
 
     def test_high_energy_causes_displacement(
-        self, motion: SecondaryMotion, uniform_frames: list, per_frame_landmarks: list
+        self, motion: SecondaryMotion, sample_frames: list, per_frame_landmarks: list
     ):
-        """High energy spikes should modify frames."""
-        energy = np.ones(50) * 3.0  # Well above threshold
-        result = motion.apply_ear_twitches(uniform_frames, energy, per_frame_landmarks, fps=25.0)
-        # At least some frames should differ from the uniform input
-        diffs = [np.abs(r.astype(float) - o.astype(float)).sum() for r, o in zip(result, uniform_frames)]
+        """High energy spikes should modify frames (needs non-uniform pixels)."""
+        # Create energy with spikes — most frames low, some very high
+        # Normalization divides by mean, so spikes need to be well above mean
+        energy = np.ones(50) * 0.1
+        energy[5] = 5.0
+        energy[15] = 5.0
+        energy[25] = 5.0  # These will be >> 1.5x the mean
+        result = motion.apply_ear_twitches(sample_frames, energy, per_frame_landmarks, fps=25.0)
+        # At least some frames should differ from the original (non-uniform) input
+        diffs = [np.abs(r.astype(float) - o.astype(float)).sum() for r, o in zip(result, sample_frames)]
         assert any(d > 0 for d in diffs), "High energy should cause frame modifications"
 
     def test_zero_energy_minimal_change(
@@ -130,13 +142,13 @@ class TestHeadBob:
         for orig, out in zip(uniform_frames, result):
             np.testing.assert_array_equal(orig, out)
 
-    def test_varying_pitch_causes_change(self, motion: SecondaryMotion, uniform_frames: list):
+    def test_varying_pitch_causes_change(self, motion: SecondaryMotion, sample_frames: list):
         """Varying pitch should cause vertical displacement in the upper region."""
         pitch = np.linspace(0, 500, 50)
-        result = motion.apply_head_bob(uniform_frames, pitch, amplitude=0.02, fps=25.0)
-        h = uniform_frames[0].shape[0]
+        result = motion.apply_head_bob(sample_frames, pitch, amplitude=0.02, fps=25.0)
+        h = sample_frames[0].shape[0]
         # The last frame (highest pitch) should differ from the original in upper half
-        diff = np.abs(result[-1][:h // 2].astype(float) - uniform_frames[-1][:h // 2].astype(float))
+        diff = np.abs(result[-1][:h // 2].astype(float) - sample_frames[-1][:h // 2].astype(float))
         assert diff.sum() > 0, "High pitch frames should differ in upper region"
 
     def test_empty_pitch(self, motion: SecondaryMotion, sample_frames: list):
@@ -155,7 +167,9 @@ class TestBlinks:
         self, motion: SecondaryMotion, per_frame_landmarks: list
     ):
         """At least some frames should be modified during blink events."""
-        frames = [np.full((256, 256, 3), 128, dtype=np.uint8) for _ in range(150)]
+        # Use gradient frames so vertical scaling produces visible changes
+        rng = np.random.RandomState(7)
+        frames = [rng.randint(50, 200, (256, 256, 3), dtype=np.uint8) for _ in range(150)]
         lms = per_frame_landmarks * 3  # extend for 150 frames
         result = motion.apply_blinks(frames, lms, interval_range=(3.0, 6.0), fps=25.0)
         diffs = [not np.array_equal(r, o) for r, o in zip(result, frames)]
@@ -166,7 +180,8 @@ class TestBlinks:
     ):
         """Blinks should occur within the specified interval range."""
         # With 150 frames at 25fps = 6 seconds, should get at least 1 blink with (3,6) interval
-        frames = [np.full((256, 256, 3), 128, dtype=np.uint8) for _ in range(150)]
+        rng = np.random.RandomState(8)
+        frames = [rng.randint(50, 200, (256, 256, 3), dtype=np.uint8) for _ in range(150)]
         lms = per_frame_landmarks * 3
         result = motion.apply_blinks(frames, lms, interval_range=(3.0, 6.0), fps=25.0)
         modified = sum(1 for r, o in zip(result, frames) if not np.array_equal(r, o))
