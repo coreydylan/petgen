@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings
 class PetGenConfig(BaseSettings):
     """PetGen configuration loaded from environment variables."""
 
-    model_config = {"env_prefix": "PETGEN_"}
+    model_config = {"env_prefix": "PETGEN_", "env_file": ".env", "env_file_encoding": "utf-8"}
 
     # API Keys
     gemini_api_key: str = ""
@@ -26,7 +26,7 @@ class PetGenConfig(BaseSettings):
     voice_presets_dir: Path = Path.home() / ".petgen" / "voice_presets"
 
     # Gemini / Nano Banana defaults
-    gemini_model: str = "gemini-3.1-flash-image"
+    gemini_model: str = "gemini-2.5-flash-image"
 
     # Animation defaults
     default_fps: int = 25

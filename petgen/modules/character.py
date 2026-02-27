@@ -71,7 +71,7 @@ class CharacterCreator:
         name: str,
         breed: str | None = None,
         breed_group: BreedGroup | None = None,
-        model: GeminiModel = GeminiModel.NANO_BANANA_2,
+        model: GeminiModel = GeminiModel.NANO_BANANA_FAST,
         personality_tags: list[str] | None = None,
     ) -> CharacterProfile:
         """Create a new pet character from reference photos.
@@ -136,7 +136,7 @@ class CharacterCreator:
     def generate_canonical_poses(
         self,
         profile: CharacterProfile,
-        model: GeminiModel = GeminiModel.NANO_BANANA_2,
+        model: GeminiModel = GeminiModel.NANO_BANANA_FAST,
     ) -> dict[str, Path]:
         """Generate front, side, and 3/4 canonical poses for animation source frames.
 
@@ -184,7 +184,7 @@ class CharacterCreator:
         profile: CharacterProfile,
         prompt: str,
         style: str = "photorealistic",
-        model: GeminiModel = GeminiModel.NANO_BANANA_2,
+        model: GeminiModel = GeminiModel.NANO_BANANA_FAST,
     ) -> Path:
         """Generate a scene image with the character in a described setting.
 
@@ -231,7 +231,7 @@ class CharacterCreator:
     def generate_mouth_open_ref(
         self,
         profile: CharacterProfile,
-        model: GeminiModel = GeminiModel.NANO_BANANA_2,
+        model: GeminiModel = GeminiModel.NANO_BANANA_FAST,
     ) -> Path:
         """Generate a reference image of the character with mouth open showing teeth/tongue.
 
@@ -330,7 +330,7 @@ class CharacterCreator:
         characters: list[CharacterProfile],
         prompt: str,
         style: str = "photorealistic",
-        model: GeminiModel = GeminiModel.NANO_BANANA_2,
+        model: GeminiModel = GeminiModel.NANO_BANANA_FAST,
     ) -> Path:
         """Generate a scene image featuring multiple characters together.
 

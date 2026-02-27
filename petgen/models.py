@@ -26,9 +26,9 @@ class AspectRatio(str, Enum):
 
 
 class GeminiModel(str, Enum):
-    NANO_BANANA_2 = "gemini-3.1-flash-image"  # Best balance
     NANO_BANANA_PRO = "gemini-3-pro-image-preview"  # Highest quality
-    NANO_BANANA_FAST = "gemini-2.5-flash-image"  # Fastest
+    NANO_BANANA_FAST = "gemini-2.5-flash-image"  # Fastest, good default
+    # NANO_BANANA_2 = "gemini-3.1-flash-image"  # Not yet publicly available
 
 
 @dataclass
