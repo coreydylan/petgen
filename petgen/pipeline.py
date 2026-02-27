@@ -38,6 +38,8 @@ class PetGenPipeline:
         self._animator = None
         self._motion = None
         self._compositor = None
+        self._inpainter = None
+        self._fur_matter = None
 
     @property
     def character_creator(self):
@@ -86,6 +88,22 @@ class PetGenPipeline:
 
             self._compositor = Compositor(self.config)
         return self._compositor
+
+    @property
+    def inpainter(self):
+        if self._inpainter is None:
+            from petgen.modules.inpainting import ProPainterInpainter
+
+            self._inpainter = ProPainterInpainter(self.config)
+        return self._inpainter
+
+    @property
+    def fur_matter(self):
+        if self._fur_matter is None:
+            from petgen.modules.matting import FurMatter
+
+            self._fur_matter = FurMatter(self.config)
+        return self._fur_matter
 
     def generate(
         self,
@@ -192,6 +210,23 @@ class PetGenPipeline:
         # --- Step 6: Compositing + encoding ---
         logger.info("[6/6] Compositing and encoding...")
         mouth_masks = self.face_detector.track_mouth_video(frames)
+
+        # Determine which upgraded modules are available
+        inpainter = self.inpainter if self.inpainter.propainter_available else None
+        fur_matter = self.fur_matter if self.fur_matter.vitmatte_available else None
+
+        # Load mouth-open reference if available
+        mouth_open_ref = None
+        mouth_bbox_for_comp = None
+        if "mouth_open" in character.canonical_poses:
+            from petgen.utils.image import load_image as _load
+
+            try:
+                mouth_open_ref = _load(character.canonical_poses["mouth_open"])
+                mouth_bbox_for_comp = bbox
+            except Exception:
+                logger.warning("Could not load mouth-open reference — skipping mouth blending")
+
         final_path = self.compositor.composite_full(
             frames=frames,
             mouth_masks=mouth_masks,
@@ -200,6 +235,10 @@ class PetGenPipeline:
             fps=config.fps,
             resolution=config.resolution,
             deflicker_enabled=config.deflicker,
+            inpainter=inpainter,
+            fur_matter=fur_matter,
+            mouth_open_ref=mouth_open_ref,
+            mouth_bbox=mouth_bbox_for_comp,
         )
 
         elapsed = time.time() - t0

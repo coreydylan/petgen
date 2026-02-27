@@ -43,8 +43,23 @@ else
     echo "  ✓ SAM2 checkpoint already present"
 fi
 
-# --- 4. YOLOv8 (auto-downloads on first use, but pre-cache it) ---
-echo "[4/4] Pre-caching YOLOv8n..."
+# --- 4. ProPainter (video inpainting for mouth artifact repair) ---
+echo "[4/6] Downloading ProPainter weights..."
+if [ ! -d "$WEIGHTS_DIR/propainter" ]; then
+    mkdir -p "$WEIGHTS_DIR/propainter"
+    huggingface-cli download MCG-NJU/ProPainter --local-dir "$WEIGHTS_DIR/propainter" \
+        --exclude "*.git*" "README.md" "docs" "*.md"
+    echo "  ✓ ProPainter weights downloaded"
+else
+    echo "  ✓ ProPainter weights already present"
+fi
+
+# --- 5. ViTMatte (auto-downloads from HuggingFace on first use) ---
+echo "[5/6] ViTMatte (hustvl/vitmatte-small-composition-1k)"
+echo "  Auto-downloads from HuggingFace on first inference. No manual step needed."
+
+# --- 6. YOLOv8 (auto-downloads on first use, but pre-cache it) ---
+echo "[6/6] Pre-caching YOLOv8n..."
 if [ ! -f "$WEIGHTS_DIR/yolov8n.pt" ]; then
     python3 -c "from ultralytics import YOLO; m = YOLO('yolov8n.pt'); import shutil; shutil.move('yolov8n.pt', '$WEIGHTS_DIR/yolov8n.pt')" 2>/dev/null || \
     wget -q --show-progress -O "$WEIGHTS_DIR/yolov8n.pt" \

@@ -5,10 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import cv2
 import numpy as np
 import pytest
 
 from petgen.config import PetGenConfig
+from petgen.models import BoundingBox
 from petgen.modules.compositing import Compositor
 
 
@@ -333,3 +335,191 @@ class TestCompositeFull:
                 frames, masks, audio_path, output_path, deflicker_enabled=False
             )
             mock_deflicker.assert_not_called()
+
+    @patch.object(Compositor, "encode_video")
+    @patch.object(Compositor, "deflicker")
+    @patch.object(Compositor, "blend_fur_boundaries")
+    def test_uses_inpainter_when_provided(
+        self,
+        mock_blend: MagicMock,
+        mock_deflicker: MagicMock,
+        mock_encode: MagicMock,
+        compositor: Compositor,
+        tmp_path: Path,
+    ):
+        """When inpainter is provided, it should be used instead of repair_artifacts."""
+        frames = [np.full((64, 64, 3), 128, dtype=np.uint8)]
+        masks = [np.zeros((64, 64), dtype=np.uint8)]
+
+        mock_inpainter = MagicMock()
+        repaired = [np.full((64, 64, 3), 135, dtype=np.uint8)]
+        mock_inpainter.repair_mouth_artifacts.return_value = repaired
+
+        mock_blend.return_value = repaired
+        mock_deflicker.return_value = repaired
+        mock_encode.return_value = tmp_path / "output.mp4"
+
+        audio_path = tmp_path / "audio.wav"
+        audio_path.touch()
+        output_path = tmp_path / "output.mp4"
+
+        with patch.object(Compositor, "generate_alpha_mattes", return_value=[np.zeros((64, 64), dtype=np.uint8)]):
+            compositor.composite_full(
+                frames, masks, audio_path, output_path, inpainter=mock_inpainter,
+            )
+
+        mock_inpainter.repair_mouth_artifacts.assert_called_once_with(frames, masks)
+
+    @patch.object(Compositor, "encode_video")
+    @patch.object(Compositor, "deflicker")
+    @patch.object(Compositor, "blend_fur_boundaries")
+    @patch.object(Compositor, "repair_artifacts")
+    def test_uses_fur_matter_when_provided(
+        self,
+        mock_repair: MagicMock,
+        mock_blend: MagicMock,
+        mock_deflicker: MagicMock,
+        mock_encode: MagicMock,
+        compositor: Compositor,
+        tmp_path: Path,
+    ):
+        """When fur_matter is provided, it should be used instead of generate_alpha_mattes."""
+        frames = [np.full((64, 64, 3), 128, dtype=np.uint8)]
+        masks = [np.zeros((64, 64), dtype=np.uint8)]
+
+        repaired = [np.full((64, 64, 3), 130, dtype=np.uint8)]
+        mock_repair.return_value = repaired
+
+        mock_fur_matter = MagicMock()
+        mattes = [np.full((64, 64), 0.8, dtype=np.float32)]
+        mock_fur_matter.generate_mattes.return_value = mattes
+
+        mock_blend.return_value = repaired
+        mock_deflicker.return_value = repaired
+        mock_encode.return_value = tmp_path / "output.mp4"
+
+        audio_path = tmp_path / "audio.wav"
+        audio_path.touch()
+        output_path = tmp_path / "output.mp4"
+
+        compositor.composite_full(
+            frames, masks, audio_path, output_path, fur_matter=mock_fur_matter,
+        )
+
+        mock_fur_matter.generate_mattes.assert_called_once_with(repaired)
+
+
+class TestBlendMouthInterior:
+    @pytest.fixture
+    def mouth_bbox(self) -> BoundingBox:
+        return BoundingBox(x1=20, y1=20, x2=44, y2=44, confidence=0.9)
+
+    def test_returns_same_count(self, compositor: Compositor, mouth_bbox: BoundingBox):
+        frames = [np.full((64, 64, 3), 128, dtype=np.uint8) for _ in range(5)]
+        masks = [np.zeros((64, 64), dtype=np.uint8) for _ in range(5)]
+        ref = np.full((64, 64, 3), 200, dtype=np.uint8)
+        result = compositor.blend_mouth_interior(frames, masks, ref, mouth_bbox)
+        assert len(result) == 5
+
+    def test_no_blend_below_threshold(self, compositor: Compositor, mouth_bbox: BoundingBox):
+        """Frames with low mouth openness should not be modified."""
+        frames = [np.full((64, 64, 3), 128, dtype=np.uint8) for _ in range(3)]
+        # Very small mask area
+        masks = []
+        for _ in range(3):
+            m = np.zeros((64, 64), dtype=np.uint8)
+            m[30, 30] = 255  # single pixel
+            masks.append(m)
+        ref = np.full((64, 64, 3), 200, dtype=np.uint8)
+        result = compositor.blend_mouth_interior(frames, masks, ref, mouth_bbox, blend_threshold=0.3)
+        for orig, out in zip(frames, result):
+            np.testing.assert_array_equal(orig, out)
+
+    def test_blends_when_above_threshold(self, compositor: Compositor, mouth_bbox: BoundingBox):
+        """Frames with large mouth openness should get mouth ref blended in."""
+        frames = [np.full((64, 64, 3), 100, dtype=np.uint8) for _ in range(3)]
+        # Fill the entire bbox area in the mask
+        masks = []
+        for _ in range(3):
+            m = np.zeros((64, 64), dtype=np.uint8)
+            m[20:44, 20:44] = 255
+            masks.append(m)
+        ref = np.full((64, 64, 3), 200, dtype=np.uint8)
+        result = compositor.blend_mouth_interior(frames, masks, ref, mouth_bbox, blend_threshold=0.1)
+        # The mouth region should shift toward the reference value (200)
+        for out in result:
+            mouth_region = out[20:44, 20:44]
+            assert mouth_region.mean() > 100  # Should be closer to 200
+
+    def test_empty_frames(self, compositor: Compositor, mouth_bbox: BoundingBox):
+        ref = np.full((64, 64, 3), 200, dtype=np.uint8)
+        result = compositor.blend_mouth_interior([], [], ref, mouth_bbox)
+        assert result == []
+
+    def test_empty_masks(self, compositor: Compositor, mouth_bbox: BoundingBox):
+        frames = [np.full((64, 64, 3), 128, dtype=np.uint8)]
+        ref = np.full((64, 64, 3), 200, dtype=np.uint8)
+        result = compositor.blend_mouth_interior(frames, [], ref, mouth_bbox)
+        assert len(result) == len(frames)
+
+
+class TestInterpolateFrames:
+    def test_doubles_frame_count(self, compositor: Compositor):
+        """Factor=2 should produce (N-1)*2 + 1 frames from N input frames."""
+        frames = [np.full((64, 64, 3), i * 30, dtype=np.uint8) for i in range(5)]
+        result = compositor.interpolate_frames(frames, factor=2)
+        expected_count = (len(frames) - 1) * 2 + 1
+        assert len(result) == expected_count
+
+    def test_factor_3(self, compositor: Compositor):
+        """Factor=3 should produce (N-1)*3 + 1 frames."""
+        frames = [np.full((64, 64, 3), i * 40, dtype=np.uint8) for i in range(4)]
+        result = compositor.interpolate_frames(frames, factor=3)
+        expected_count = (len(frames) - 1) * 3 + 1
+        assert len(result) == expected_count
+
+    def test_preserves_first_and_last(self, compositor: Compositor):
+        """First and last frames should be preserved exactly."""
+        frames = [
+            np.full((64, 64, 3), 50, dtype=np.uint8),
+            np.full((64, 64, 3), 200, dtype=np.uint8),
+        ]
+        result = compositor.interpolate_frames(frames, factor=2)
+        np.testing.assert_array_equal(result[0], frames[0])
+        np.testing.assert_array_equal(result[-1], frames[-1])
+
+    def test_interpolated_frame_is_intermediate(self, compositor: Compositor):
+        """The intermediate frame should have values between the two endpoints."""
+        f0 = np.full((64, 64, 3), 50, dtype=np.uint8)
+        f1 = np.full((64, 64, 3), 200, dtype=np.uint8)
+        result = compositor.interpolate_frames([f0, f1], factor=2)
+        # Middle frame should be between 50 and 200
+        mid = result[1]
+        assert mid.mean() > 50
+        assert mid.mean() < 200
+
+    def test_single_frame_passthrough(self, compositor: Compositor):
+        frame = np.full((64, 64, 3), 128, dtype=np.uint8)
+        result = compositor.interpolate_frames([frame], factor=2)
+        assert len(result) == 1
+        np.testing.assert_array_equal(result[0], frame)
+
+    def test_factor_1_passthrough(self, compositor: Compositor):
+        """Factor < 2 should return frames unchanged."""
+        frames = [np.full((64, 64, 3), i * 50, dtype=np.uint8) for i in range(3)]
+        result = compositor.interpolate_frames(frames, factor=1)
+        assert len(result) == len(frames)
+
+    def test_empty_frames(self, compositor: Compositor):
+        result = compositor.interpolate_frames([], factor=2)
+        assert result == []
+
+    def test_output_shape_preserved(self, compositor: Compositor):
+        """All output frames should have the same shape as input frames."""
+        frames = [
+            np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+            for _ in range(4)
+        ]
+        result = compositor.interpolate_frames(frames, factor=2)
+        for f in result:
+            assert f.shape == (64, 64, 3)

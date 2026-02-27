@@ -655,6 +655,99 @@ class TestListAndGetCharacters:
 
 
 # ---------------------------------------------------------------------------
+# Tests: CharacterCreator.generate_mouth_open_ref
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateMouthOpenRef:
+    def test_generates_mouth_open_image(self, creator: CharacterCreator, ref_image: Path):
+        creator._client.models.generate_content.return_value = _make_gemini_image_response()
+
+        char_id = "mouth-test"
+        images_dir = creator.config.characters_dir / char_id / "images"
+        images_dir.mkdir(parents=True)
+
+        profile = CharacterProfile(
+            id=char_id,
+            name="Chomper",
+            breed="Corgi",
+            breed_group=BreedGroup.SMALL_DOG,
+            reference_images=[ref_image],
+            canonical_poses={"front": ref_image},
+        )
+
+        out_path = creator.generate_mouth_open_ref(profile)
+
+        assert out_path.exists()
+        assert out_path.name == "mouth_open.png"
+        assert "mouth_open" in profile.canonical_poses
+        creator._client.models.generate_content.assert_called_once()
+
+    def test_prompt_contains_mouth_open(self, creator: CharacterCreator, ref_image: Path):
+        creator._client.models.generate_content.return_value = _make_gemini_image_response()
+
+        char_id = "mouth-prompt-test"
+        (creator.config.characters_dir / char_id / "images").mkdir(parents=True)
+
+        profile = CharacterProfile(
+            id=char_id,
+            name="Yawn",
+            breed="Golden Retriever",
+            breed_group=BreedGroup.LARGE_DOG,
+            reference_images=[ref_image],
+        )
+
+        creator.generate_mouth_open_ref(profile)
+
+        call_contents = creator._client.models.generate_content.call_args[1]["contents"]
+        prompt_text = call_contents[-1]
+        assert "mouth wide open" in prompt_text.lower()
+        assert "teeth" in prompt_text.lower()
+
+    def test_saves_profile_with_mouth_open_pose(self, creator: CharacterCreator, ref_image: Path):
+        creator._client.models.generate_content.return_value = _make_gemini_image_response()
+
+        char_id = "mouth-save-test"
+        (creator.config.characters_dir / char_id / "images").mkdir(parents=True)
+
+        profile = CharacterProfile(
+            id=char_id,
+            name="Saver",
+            breed="Pug",
+            breed_group=BreedGroup.SMALL_DOG,
+            reference_images=[ref_image],
+        )
+
+        creator.generate_mouth_open_ref(profile)
+
+        # Verify profile was saved with the new pose
+        json_path = creator.config.characters_dir / f"{char_id}.json"
+        assert json_path.exists()
+        loaded = CharacterProfile.load(json_path)
+        assert "mouth_open" in loaded.canonical_poses
+
+    def test_dark_fur_advisory_in_prompt(self, creator: CharacterCreator, ref_image: Path):
+        creator._client.models.generate_content.return_value = _make_gemini_image_response()
+
+        char_id = "mouth-dark-test"
+        (creator.config.characters_dir / char_id / "images").mkdir(parents=True)
+
+        profile = CharacterProfile(
+            id=char_id,
+            name="Midnight",
+            breed="Black Labrador",
+            breed_group=BreedGroup.LARGE_DOG,
+            reference_images=[ref_image],
+        )
+
+        creator.generate_mouth_open_ref(profile)
+
+        call_contents = creator._client.models.generate_content.call_args[1]["contents"]
+        prompt_text = call_contents[-1]
+        assert "dark fur" in prompt_text.lower()
+
+
+# ---------------------------------------------------------------------------
 # Tests: CharacterCreator.generate_multi_character_scene
 # ---------------------------------------------------------------------------
 
